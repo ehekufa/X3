@@ -116,7 +116,8 @@ jobs:
           (cd build/dex && zip -X ../../out/unsigned.apk classes.dex)
 
       - name: Align
-        run: "$ANDROID_HOME/build-tools/34.0.0/zipalign" -v 4 out/unsigned.apk out/aligned.apk
+        run: |
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -v 4 out/unsigned.apk out/aligned.apk
 
       - name: Sign APK
         env:
