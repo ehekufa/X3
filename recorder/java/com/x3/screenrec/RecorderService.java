@@ -92,6 +92,11 @@ public class RecorderService extends Service {
     // а не только микрофон. Работает там, где система разрешает VOICE_CALL.
     private boolean callMode = false;
 
+    // Согласие на запись экрана получено (токен MediaProjection на руках).
+    // С этого момента FGS обязан иметь тип mediaProjection,
+    // иначе MediaProjection бросает SecurityException.
+    private boolean projectionConsented = false;
+
     // Тайминги (SystemClock.elapsedRealtime)
     private long recStartedAt = 0L;
     private long pausedTotalMs = 0L;
@@ -170,6 +175,11 @@ public class RecorderService extends Service {
             return;
         }
         try {
+            // Сначала поднимаем тип FGS до mediaProjection,
+            // потом трогаем MediaProjection (на Android 10+ иначе SecurityException)
+            projectionConsented = true;
+            startForegroundInternal(buildNotification(true));
+
             if (projection == null) {
                 MediaProjectionManager mpm =
                         (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
@@ -456,7 +466,7 @@ public class RecorderService extends Service {
     private void startForegroundInternal(Notification notification) {
         if (Build.VERSION.SDK_INT >= 29) {
             int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
-            if (projection != null) {
+            if (projectionConsented || projection != null) {
                 type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
             }
             try {
