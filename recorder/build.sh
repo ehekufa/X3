@@ -13,14 +13,13 @@ BT="$ANDROID_HOME/build-tools/34.0.0"
 SDK_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
 
 rm -rf build out
-mkdir -p build/gen build/classes build/dex out
+mkdir -p build/classes build/dex out
 
 VERSION_CODE="$(sed -n 's/.*android:versionCode="\([0-9]\+\).*/\1/p' AndroidManifest.xml)"
 VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]\+\)".*/\1/p' AndroidManifest.xml)"
 
-echo "== aapt: R.java + resources"
+echo "== aapt: resources (R.java не нужен — id берём по имени, см. Res.java)"
 "$BT/aapt" package \
-  -J build/gen \
   -M AndroidManifest.xml \
   -S res \
   -I "$SDK_JAR" \
@@ -35,7 +34,6 @@ echo "== javac"
   -classpath "$SDK_JAR" \
   -encoding UTF-8 \
   -d build/classes \
-  build/gen/com/x3/screenrec/R.java \
   $(find java -name '*.java')
 
 echo "== d8"

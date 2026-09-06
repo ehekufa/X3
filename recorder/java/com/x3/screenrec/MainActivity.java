@@ -28,11 +28,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+        setContentView(Res.of(this, "activity_main", "layout"));
 
-        btnOverlay = findViewById(R.id.btnOverlay);
-        btnStart = findViewById(R.id.btnStart);
-        statusText = findViewById(R.id.statusText);
+        btnOverlay = findViewById(Res.of(this, "btnOverlay", "id"));
+        btnStart = findViewById(Res.of(this, "btnStart", "id"));
+        statusText = findViewById(Res.of(this, "statusText", "id"));
 
         btnOverlay.setOnClickListener(v -> openOverlaySettings());
         btnStart.setOnClickListener(v -> onLaunchClicked());

@@ -479,7 +479,7 @@ public class RecorderService extends Service {
         return builder
                 .setContentTitle(title)
                 .setContentText(text)
-                .setSmallIcon(R.drawable.ic_stat_rec)
+                .setSmallIcon(Res.of(this, "ic_stat_rec", "drawable"))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_SERVICE)
