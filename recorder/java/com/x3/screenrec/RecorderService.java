@@ -296,6 +296,14 @@ public class RecorderService extends Service {
             attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.MIC,
                     fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
         }
+        if (audioMode != AUDIO_NONE) {
+            // Последний рубеж: если устройство не принимает ни один вариант
+            // со звуком — хотя бы видео без звука (лучше, чем ничего)
+            attempts.add(new RecorderConfig(false, MediaRecorder.AudioSource.MIC,
+                    width, height, 8_000_000, 192_000, true));
+            attempts.add(new RecorderConfig(false, MediaRecorder.AudioSource.MIC,
+                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
+        }
 
         MediaRecorder prepared = null;
         RecorderConfig used = null;
@@ -315,12 +323,16 @@ public class RecorderService extends Service {
             state = State.IDLE;
             updatePanel();
             showPanel(true);
+            RecorderConfig last = attempts.get(attempts.size() - 1);
             Toast.makeText(this,
-                    "Не удалось начать запись:\n"
+                    "Не удалось начать запись: "
                             + (lastError != null
                             ? lastError.getClass().getSimpleName() + ": "
                                     + String.valueOf(lastError.getMessage())
-                            : "неизвестная причина"),
+                            : "неизвестная причина")
+                            + "\nПоследняя попытка: "
+                            + (last.audioOn ? "видео + звук" : "только видео")
+                            + " " + last.width + "x" + last.height,
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -346,7 +358,9 @@ public class RecorderService extends Service {
 
             int usedIndex = attempts.indexOf(used);
             String message;
-            if (audioMode == AUDIO_CALL && usedIndex == 1) {
+            if (!used.audioOn && audioMode != AUDIO_NONE) {
+                message = "Звук не завёлся — записываю только видео";
+            } else if (audioMode == AUDIO_CALL && usedIndex == 1) {
                 message = "Устройство не даёт звук звонка — записываю с микрофона";
             } else if (usedIndex != 0) {
                 message = "Запись началась в " + used.width + "x" + used.height
