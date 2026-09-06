@@ -85,15 +85,15 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Generate R.java and package resources
+      - name: Package resources
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/34.0.0"
           SDK_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
 
-          mkdir -p build/gen build/classes out
+          mkdir -p build/classes out
+          # R.java не нужен: код берёт id ресурсов по имени (Res.java)
           "$BT/aapt" package \
-            -J build/gen \
             -M recorder/AndroidManifest.xml \
             -S recorder/res \
             -I "$SDK_JAR" \
@@ -113,7 +113,6 @@ jobs:
             -classpath "$SDK_JAR" \
             -encoding UTF-8 \
             -d build/classes \
-            build/gen/com/x3/screenrec/R.java \
             $(find recorder/java -name '*.java')
 
       - name: DEX and add to APK
