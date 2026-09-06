@@ -43,6 +43,7 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.Locale;
 
@@ -87,6 +88,7 @@ public class RecorderService extends Service {
     private MediaProjection.Callback projectionCallback;
     private MediaRecorder recorder;
     private VirtualDisplay virtualDisplay;
+    private ParcelFileDescriptor currentPfd; // Android 10+: fd на файл MediaStore
 
     // Режим звонка: записывать звук со всего телефона (оба конца звонка),
     // а не только микрофон. Работает там, где система разрешает VOICE_CALL.
@@ -216,6 +218,26 @@ public class RecorderService extends Service {
         }
     }
 
+    /** Набор параметров MediaRecorder для одной попытки prepare(). */
+    private static final class RecorderConfig {
+        final int audioSource;
+        final int width;
+        final int height;
+        final int videoBitRate;
+        final int audioBitRate;
+        final boolean audioRate48k;
+
+        RecorderConfig(int audioSource, int width, int height,
+                       int videoBitRate, int audioBitRate, boolean audioRate48k) {
+            this.audioSource = audioSource;
+            this.width = width;
+            this.height = height;
+            this.videoBitRate = videoBitRate;
+            this.audioBitRate = audioBitRate;
+            this.audioRate48k = audioRate48k;
+        }
+    }
+
     private void startRecording() {
         if (projection == null || recorder != null) {
             return;
@@ -238,46 +260,65 @@ public class RecorderService extends Service {
         width = Math.max(16, (width / 16) * 16);
         height = Math.max(16, (height / 16) * 16);
 
+        // Запасной вариант: длинная сторона 1280 (720p)
+        float fScale = 1280f / Math.max(width, height);
+        int fallbackWidth = Math.max(16, ((int) (width * fScale) / 16) * 16);
+        int fallbackHeight = Math.max(16, ((int) (height * fScale) / 16) * 16);
+
         lastFileName = "X3_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
                 .format(new Date()) + ".mp4";
 
-        try {
-            recorder = new MediaRecorder();
-            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-            recorder.setAudioSource(callMode
-                    ? MediaRecorder.AudioSource.VOICE_CALL
-                    : MediaRecorder.AudioSource.MIC);
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-            recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            recorder.setVideoSize(width, height);
-            recorder.setVideoEncodingBitRate(8_000_000);
-            recorder.setVideoFrameRate(30);
-            recorder.setAudioEncodingBitRate(192_000);
-            recorder.setAudioSamplingRate(48_000);
+        // Цепочка попыток:
+        // 0 — то, что выбрал пользователь (режим звонка или микрофон, нативное разрешение)
+        // 1 — если режим звонка не пошёл, то же самое, но с микрофоном
+        // 2 — упрощённые параметры (720p, ниже битрейт) — почти всегда проходит
+        ArrayList<RecorderConfig> attempts = new ArrayList<RecorderConfig>();
+        attempts.add(new RecorderConfig(callMode
+                ? MediaRecorder.AudioSource.VOICE_CALL
+                : MediaRecorder.AudioSource.MIC,
+                width, height, 8_000_000, 192_000, true));
+        if (callMode) {
+            attempts.add(new RecorderConfig(MediaRecorder.AudioSource.MIC,
+                    width, height, 8_000_000, 192_000, true));
+        }
+        attempts.add(new RecorderConfig(MediaRecorder.AudioSource.MIC,
+                fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
 
-            if (Build.VERSION.SDK_INT >= 29) {
-                Uri uri = insertMediaStoreRow(lastFileName);
-                if (uri == null) {
-                    throw new IOException("MediaStore: не удалось создать файл");
-                }
-                ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "w");
-                recorder.setOutputFile(pfd.getFileDescriptor());
-            } else {
-                File dir = Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_MOVIES);
-                if (dir == null || (!dir.isDirectory() && !dir.mkdirs())) {
-                    throw new IOException("Нет доступа к папке Movies");
-                }
-                recorder.setOutputFile(new File(dir, lastFileName));
+        MediaRecorder prepared = null;
+        RecorderConfig used = null;
+        Exception lastError = null;
+        for (int i = 0; i < attempts.size() && prepared == null; i++) {
+            try {
+                prepared = createPreparedRecorder(attempts.get(i));
+                used = attempts.get(i);
+            } catch (Exception e) {
+                lastError = e;
+                closeCurrentPfd();
+                android.util.Log.w("X3Recorder", "prepare attempt " + i + " failed", e);
             }
+        }
 
-            recorder.prepare();
+        if (prepared == null || used == null) {
+            state = State.IDLE;
+            updatePanel();
+            showPanel(true);
+            Toast.makeText(this,
+                    "Не удалось начать запись:\n"
+                            + (lastError != null
+                            ? lastError.getClass().getSimpleName() + ": "
+                                    + String.valueOf(lastError.getMessage())
+                            : "неизвестная причина"),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        recorder = prepared;
+
+        try {
             recorder.start();
 
             Surface surface = recorder.getSurface();
             virtualDisplay = projection.createVirtualDisplay(
-                    "X3Recorder", width, height, dm.densityDpi,
+                    "X3Recorder", used.width, used.height, dm.densityDpi,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     surface, null, handler);
 
@@ -286,16 +327,23 @@ public class RecorderService extends Service {
             pauseStartedAt = 0L;
             state = State.RECORDING;
 
-            // После согласия показываем системе тип FGS mediaProjection
             startForegroundInternal(buildNotification(true));
             updatePanel();
             startTicking();
-            Toast.makeText(this,
-                    callMode ? "Запись началась (режим звонка)" : "Запись началась",
-                    Toast.LENGTH_SHORT).show();
+
+            int usedIndex = attempts.indexOf(used);
+            String message;
+            if (callMode && usedIndex == 1) {
+                message = "Устройство не даёт звук звонка — записываю с микрофона";
+            } else if (usedIndex != 0) {
+                message = "Запись началась в " + used.width + "x" + used.height
+                        + " (резервные параметры)";
+            } else {
+                message = callMode ? "Запись началась (режим звонка)" : "Запись началась";
+            }
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
-            // MediaRecorder prepare/start бросают и RuntimeException —
-            // ловим всё, чтобы приложение не падало, а показало причину
+            // prepare прошёл, но start/virtualDisplay упали — тоже не роняем приложение
             android.util.Log.e("X3Recorder", "startRecording failed", e);
             cleanupRecorder();
             state = State.IDLE;
@@ -305,6 +353,65 @@ public class RecorderService extends Service {
                     "Не удалось начать запись:\n" + e.getClass().getSimpleName()
                             + ": " + String.valueOf(e.getMessage()),
                     Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Создаёт MediaRecorder с нужными параметрами и выполняет prepare().
+     *  При неудаче сам себя освобождает, чтобы не занимать аудио-сеанс. */
+    private MediaRecorder createPreparedRecorder(RecorderConfig cfg) throws IOException {
+        MediaRecorder r = new MediaRecorder();
+        try {
+            r.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+            r.setAudioSource(cfg.audioSource);
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            r.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            r.setVideoSize(cfg.width, cfg.height);
+            r.setVideoEncodingBitRate(cfg.videoBitRate);
+            r.setVideoFrameRate(30);
+            r.setAudioEncodingBitRate(cfg.audioBitRate);
+            if (cfg.audioRate48k) {
+                r.setAudioSamplingRate(48_000);
+            }
+
+            if (Build.VERSION.SDK_INT >= 29) {
+                Uri uri = insertMediaStoreRow(lastFileName);
+                if (uri == null) {
+                    throw new IOException("MediaStore: не удалось создать файл");
+                }
+                currentPfd = getContentResolver().openFileDescriptor(uri, "w");
+                r.setOutputFile(currentPfd.getFileDescriptor());
+            } else {
+                File dir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_MOVIES);
+                if (dir == null || (!dir.isDirectory() && !dir.mkdirs())) {
+                    throw new IOException("Нет доступа к папке Movies");
+                }
+                r.setOutputFile(new File(dir, lastFileName));
+            }
+
+            r.prepare();
+            return r;
+        } catch (Exception e) {
+            try {
+                r.release();
+            } catch (Exception ignored) {
+            }
+            if (e instanceof IOException) {
+                throw (IOException) e;
+            }
+            throw new IOException(e.getClass().getSimpleName()
+                    + ": " + String.valueOf(e.getMessage()), e);
+        }
+    }
+
+    private void closeCurrentPfd() {
+        if (currentPfd != null) {
+            try {
+                currentPfd.close();
+            } catch (Exception ignored) {
+            }
+            currentPfd = null;
         }
     }
 
