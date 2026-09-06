@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -34,8 +35,18 @@ public class MainActivity extends Activity {
         btnStart = findViewById(Res.of(this, "btnStart", "id"));
         statusText = findViewById(Res.of(this, "statusText", "id"));
 
-        btnOverlay.setOnClickListener(v -> openOverlaySettings());
-        btnStart.setOnClickListener(v -> onLaunchClicked());
+        btnOverlay.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openOverlaySettings();
+            }
+        });
+        btnStart.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onLaunchClicked();
+            }
+        });
 
         updateStatus();
     }

@@ -176,12 +176,15 @@ public class RecorderService extends Service {
                 @Override
                 public void onStop() {
                     // Пользователь отозвал доступ (или запись завершилась системой)
-                    handler.post(() -> {
-                        if (state != State.IDLE) {
-                            stopRecording();
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (state != State.IDLE) {
+                                stopRecording();
+                            }
+                            releaseProjection();
+                            updatePanel();
                         }
-                        releaseProjection();
-                        updatePanel();
                     });
                 }
             };
@@ -592,28 +595,44 @@ public class RecorderService extends Service {
             }
         });
 
-        btnStart.setOnClickListener(v -> {
-            showPanel(false);
-            Intent bridge = new Intent(RecorderService.this, ProjectionBridgeActivity.class);
-            bridge.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(bridge);
-        });
-
-        btnCallMode.setOnClickListener(v -> {
-            if (state != State.IDLE) {
-                return; // режим меняется только до начала записи
+        btnStart.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showPanel(false);
+                Intent bridge = new Intent(RecorderService.this, ProjectionBridgeActivity.class);
+                bridge.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(bridge);
             }
-            callMode = !callMode;
-            btnCallMode.setText("Режим звонка: " + (callMode ? "вкл" : "выкл"));
-            btnCallMode.setBackgroundColor(callMode ? 0xFF7CB342 : 0xFF455A64);
-            Toast.makeText(this, callMode
-                            ? "Режим звонка: записывается звук со всего телефона"
-                            : "Записывается микрофон",
-                    Toast.LENGTH_SHORT).show();
         });
 
-        btnPause.setOnClickListener(v -> togglePause());
-        btnStop.setOnClickListener(v -> stopRecording());
+        btnCallMode.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (state != State.IDLE) {
+                    return; // режим меняется только до начала записи
+                }
+                callMode = !callMode;
+                btnCallMode.setText("Режим звонка: " + (callMode ? "вкл" : "выкл"));
+                btnCallMode.setBackgroundColor(callMode ? 0xFF7CB342 : 0xFF455A64);
+                Toast.makeText(RecorderService.this, callMode
+                                ? "Режим звонка: записывается звук со всего телефона"
+                                : "Записывается микрофон",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        btnPause.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePause();
+            }
+        });
+        btnStop.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                stopRecording();
+            }
+        });
 
         try {
             windowManager.addView(overlayRoot, overlayParams);
