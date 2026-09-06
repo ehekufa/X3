@@ -1,5 +1,6 @@
 package com.x3.screenrec;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -7,6 +8,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ContentValues;
+import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
@@ -222,7 +224,8 @@ public class RecorderService extends Service {
         }
     }
 
-    /** Набор параметров MediaRecorder для одной попытки prepare(). */
+    /** Набор параметров MediaRecorder для одной попытки prepare().
+     *  audioRateHz = 0 — не задавать (дефолт), audioChannels = 0 — не задавать. */
     private static final class RecorderConfig {
         final boolean audioOn;
         final int audioSource;
@@ -230,17 +233,20 @@ public class RecorderService extends Service {
         final int height;
         final int videoBitRate;
         final int audioBitRate;
-        final boolean audioRate48k;
+        final int audioRateHz;
+        final int audioChannels;
 
         RecorderConfig(boolean audioOn, int audioSource, int width, int height,
-                       int videoBitRate, int audioBitRate, boolean audioRate48k) {
+                       int videoBitRate, int audioBitRate, int audioRateHz,
+                       int audioChannels) {
             this.audioOn = audioOn;
             this.audioSource = audioSource;
             this.width = width;
             this.height = height;
             this.videoBitRate = videoBitRate;
             this.audioBitRate = audioBitRate;
-            this.audioRate48k = audioRate48k;
+            this.audioRateHz = audioRateHz;
+            this.audioChannels = audioChannels;
         }
     }
 
@@ -274,35 +280,57 @@ public class RecorderService extends Service {
         lastFileName = "X3_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
                 .format(new Date()) + ".mp4";
 
+        // Если режим со звуком, но разрешения на микрофон нет —
+        // честно говорим, а не кидаем тайное IllegalStateException
+        if (audioMode != AUDIO_NONE
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                        != PackageManager.PERMISSION_GRANTED) {
+            state = State.IDLE;
+            updatePanel();
+            showPanel(true);
+            Toast.makeText(this,
+                    "Нет разрешения на микрофон:\nНастройки → Приложения → X3 Recorder → "
+                            + "Разрешения → Микрофон → Разрешить",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
         // Цепочка попыток: сначала то, что выбрал пользователь,
-        // потом фолбэки; последняя — упрощённые параметры (720p), почти всегда проходит
+        // потом варианты звука (некоторые устройства прихотливые),
+        // и напоследок — хотя бы видео без звука
         ArrayList<RecorderConfig> attempts = new ArrayList<RecorderConfig>();
         if (audioMode == AUDIO_CALL) {
             attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.VOICE_CALL,
-                    width, height, 8_000_000, 192_000, true));
+                    width, height, 8_000_000, 192_000, 48_000, 0));
             attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.MIC,
-                    width, height, 8_000_000, 192_000, true));
+                    width, height, 8_000_000, 192_000, 48_000, 0));
+            attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.CAMCORDER,
+                    width, height, 8_000_000, 192_000, 48_000, 0));
             attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.MIC,
-                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
+                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, 0, 0));
         } else if (audioMode == AUDIO_NONE) {
             // Без звука: микрофон вообще не открываем, чтобы не мешать звонкам
             attempts.add(new RecorderConfig(false, MediaRecorder.AudioSource.MIC,
-                    width, height, 8_000_000, 192_000, true));
+                    width, height, 8_000_000, 192_000, 0, 0));
             attempts.add(new RecorderConfig(false, MediaRecorder.AudioSource.MIC,
-                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
+                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, 0, 0));
         } else {
             attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.MIC,
-                    width, height, 8_000_000, 192_000, true));
+                    width, height, 8_000_000, 192_000, 48_000, 0));
+            attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.CAMCORDER,
+                    width, height, 8_000_000, 192_000, 48_000, 0));
             attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.MIC,
-                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
+                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, 0, 0));
+            attempts.add(new RecorderConfig(true, MediaRecorder.AudioSource.MIC,
+                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, 44_100, 2));
         }
         if (audioMode != AUDIO_NONE) {
             // Последний рубеж: если устройство не принимает ни один вариант
             // со звуком — хотя бы видео без звука (лучше, чем ничего)
             attempts.add(new RecorderConfig(false, MediaRecorder.AudioSource.MIC,
-                    width, height, 8_000_000, 192_000, true));
+                    width, height, 8_000_000, 192_000, 0, 0));
             attempts.add(new RecorderConfig(false, MediaRecorder.AudioSource.MIC,
-                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, false));
+                    fallbackWidth, fallbackHeight, 4_000_000, 128_000, 0, 0));
         }
 
         MediaRecorder prepared = null;
@@ -399,8 +427,11 @@ public class RecorderService extends Service {
                 r.setAudioSource(cfg.audioSource);
                 r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
                 r.setAudioEncodingBitRate(cfg.audioBitRate);
-                if (cfg.audioRate48k) {
-                    r.setAudioSamplingRate(48_000);
+                if (cfg.audioRateHz > 0) {
+                    r.setAudioSamplingRate(cfg.audioRateHz);
+                }
+                if (cfg.audioChannels > 1) {
+                    r.setAudioChannels(cfg.audioChannels);
                 }
             }
             r.setVideoSize(cfg.width, cfg.height);
