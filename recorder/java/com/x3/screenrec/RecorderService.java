@@ -169,29 +169,41 @@ public class RecorderService extends Service {
             showPanel(true);
             return;
         }
-        if (projection == null) {
-            MediaProjectionManager mpm =
-                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-            projection = mpm.getMediaProjection(resultCode, data);
-            projectionCallback = new MediaProjection.Callback() {
-                @Override
-                public void onStop() {
-                    // Пользователь отозвал доступ (или запись завершилась системой)
-                    handler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (state != State.IDLE) {
-                                stopRecording();
+        try {
+            if (projection == null) {
+                MediaProjectionManager mpm =
+                        (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+                projection = mpm.getMediaProjection(resultCode, data);
+                projectionCallback = new MediaProjection.Callback() {
+                    @Override
+                    public void onStop() {
+                        // Пользователь отозвал доступ (или запись завершилась системой)
+                        handler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (state != State.IDLE) {
+                                    stopRecording();
+                                }
+                                releaseProjection();
+                                updatePanel();
                             }
-                            releaseProjection();
-                            updatePanel();
-                        }
-                    });
-                }
-            };
-            projection.registerCallback(projectionCallback, handler);
+                        });
+                    }
+                };
+                projection.registerCallback(projectionCallback, handler);
+            }
+            startRecording();
+        } catch (Exception e) {
+            android.util.Log.e("X3Recorder", "onProjectionResult failed", e);
+            releaseProjection();
+            state = State.IDLE;
+            updatePanel();
+            showPanel(true);
+            Toast.makeText(this,
+                    "Не удалось начать запись:\n" + e.getClass().getSimpleName()
+                            + ": " + String.valueOf(e.getMessage()),
+                    Toast.LENGTH_LONG).show();
         }
-        startRecording();
     }
 
     private void startRecording() {
@@ -212,8 +224,9 @@ public class RecorderService extends Service {
             width = (int) (width * scale);
             height = 1920;
         }
-        width &= ~1;
-        height &= ~1;
+        // Кодировщики H.264 требуют размер кратно 16
+        width = Math.max(16, (width / 16) * 16);
+        height = Math.max(16, (height / 16) * 16);
 
         lastFileName = "X3_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
                 .format(new Date()) + ".mp4";
@@ -270,13 +283,18 @@ public class RecorderService extends Service {
             Toast.makeText(this,
                     callMode ? "Запись началась (режим звонка)" : "Запись началась",
                     Toast.LENGTH_SHORT).show();
-        } catch (IOException e) {
-            e.printStackTrace();
-            Toast.makeText(this,
-                    "Не удалось начать запись: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            // MediaRecorder prepare/start бросают и RuntimeException —
+            // ловим всё, чтобы приложение не падало, а показало причину
+            android.util.Log.e("X3Recorder", "startRecording failed", e);
             cleanupRecorder();
             state = State.IDLE;
             updatePanel();
+            showPanel(true);
+            Toast.makeText(this,
+                    "Не удалось начать запись:\n" + e.getClass().getSimpleName()
+                            + ": " + String.valueOf(e.getMessage()),
+                    Toast.LENGTH_LONG).show();
         }
     }
 
@@ -480,10 +498,17 @@ public class RecorderService extends Service {
             builder.addAction(new Notification.Action.Builder(null, "Стоп", stopPending).build());
         }
 
+        int icon;
+        try {
+            icon = Res.of(this, "ic_stat_rec", "drawable");
+        } catch (Exception e) {
+            icon = android.R.drawable.ic_menu_camera; // запасной системный
+        }
+
         return builder
                 .setContentTitle(title)
                 .setContentText(text)
-                .setSmallIcon(Res.of(this, "ic_stat_rec", "drawable"))
+                .setSmallIcon(icon)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_SERVICE)
@@ -600,9 +625,19 @@ public class RecorderService extends Service {
             @Override
             public void onClick(View v) {
                 showPanel(false);
-                Intent bridge = new Intent(RecorderService.this, ProjectionBridgeActivity.class);
-                bridge.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(bridge);
+                try {
+                    Intent bridge = new Intent(RecorderService.this, ProjectionBridgeActivity.class);
+                    bridge.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(bridge);
+                } catch (Exception e) {
+                    android.util.Log.e("X3Recorder", "start bridge failed", e);
+                    showPanel(true);
+                    Toast.makeText(RecorderService.this,
+                            "Не удалось открыть запрос записи:\n"
+                                    + e.getClass().getSimpleName() + ": "
+                                    + String.valueOf(e.getMessage()),
+                            Toast.LENGTH_LONG).show();
+                }
             }
         });
 
