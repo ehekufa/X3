@@ -72,7 +72,7 @@ public class RecorderService extends Service {
 
     // Оверлей
     private WindowManager windowManager;
-    private View overlayRoot;
+    private FrameLayout overlayRoot;
     private WindowManager.LayoutParams overlayParams;
     private TextView dot;
     private GradientDrawable dotBackground;
@@ -124,7 +124,7 @@ public class RecorderService extends Service {
     }
 
     @Override
-    public void onStartCommand(Intent intent, int flags, int startId) {
+    public int onStartCommand(Intent intent, int flags, int startId) {
         startForegroundInternal(buildNotification(true));
 
         if (intent != null && intent.getAction() != null) {
@@ -133,13 +133,13 @@ public class RecorderService extends Service {
                 int code = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
                 Intent data = intent.getParcelableExtra(EXTRA_RESULT_DATA);
                 onProjectionResult(code, data);
-                return;
+                return START_STICKY;
             }
             if (ACTION_RECORDING_CANCELED.equals(action)) {
                 Toast.makeText(this,
                         "Разрешение на запись экрана не выдано", Toast.LENGTH_LONG).show();
                 showPanel(true);
-                return;
+                return START_STICKY;
             }
             if (ACTION_STOP.equals(action)) {
                 if (state != State.IDLE) {
@@ -147,16 +147,17 @@ public class RecorderService extends Service {
                 } else {
                     stopSelfSafely();
                 }
-                return;
+                return START_STICKY;
             }
         }
 
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this,
                     "Дай приложению разрешение «поверх» в настройках", Toast.LENGTH_LONG).show();
-            return;
+            return START_STICKY;
         }
         ensureOverlay();
+        return START_STICKY;
     }
 
     // ---------- запись ----------

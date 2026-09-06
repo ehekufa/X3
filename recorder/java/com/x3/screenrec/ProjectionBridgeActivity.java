@@ -24,7 +24,8 @@ public class ProjectionBridgeActivity extends Activity {
             finish();
             return;
         }
-        mpm.startActivityForResult(mpm.createScreenCaptureIntent(), REQ_PROJECTION);
+        // Системный диалог «Записывать экран?» показываем от activity
+        startActivityForResult(mpm.createScreenCaptureIntent(), REQ_PROJECTION);
     }
 
     @Override
