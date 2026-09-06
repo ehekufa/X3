@@ -28,8 +28,9 @@ echo "== aapt: resources (R.java не нужен — id берём по имен
   -F out/unsigned.apk
 
 echo "== javac"
+# -target 8 обязателен: с target 9+ javac запрещает --boot-class-path
 "$JAVA_HOME/bin/javac" \
-  -source 11 -target 11 \
+  -source 8 -target 8 \
   -bootclasspath "$SDK_JAR" \
   -classpath "$SDK_JAR" \
   -encoding UTF-8 \
