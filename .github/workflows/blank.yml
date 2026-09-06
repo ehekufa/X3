@@ -107,8 +107,10 @@ jobs:
           BT="$ANDROID_HOME/build-tools/34.0.0"
           SDK_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
 
+          # -target 8 обязателен: с target 9+ javac запрещает --boot-class-path.
+          # Лямбды d8 десугарит под min-api 24.
           "$JAVA_HOME/bin/javac" \
-            -source 11 -target 11 \
+            -source 8 -target 8 \
             -bootclasspath "$SDK_JAR" \
             -classpath "$SDK_JAR" \
             -encoding UTF-8 \
