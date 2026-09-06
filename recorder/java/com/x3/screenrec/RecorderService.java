@@ -15,6 +15,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.media.AudioPlaybackCaptureConfiguration;
 import android.media.MediaRecorder;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
@@ -79,7 +80,7 @@ public class RecorderService extends Service {
     private GradientDrawable dotBackground;
     private LinearLayout panel;
     private Button btnStart;
-    private Button btnCallMode;
+    private Button btnAudioMode;
     private Button btnPause;
     private Button btnStop;
 
@@ -90,9 +91,13 @@ public class RecorderService extends Service {
     private VirtualDisplay virtualDisplay;
     private ParcelFileDescriptor currentPfd; // Android 10+: fd на файл MediaStore
 
-    // Режим звонка: записывать звук со всего телефона (оба конца звонка),
-    // а не только микрофон. Работает там, где система разрешает VOICE_CALL.
-    private boolean callMode = false;
+    // Источники звука: 0 — микрофон, 1 — обычный телефонный звонок,
+    // 2 — мессенджеры (аудио приложений устройства, Android 11+)
+    private static final int SOUND_MIC = 0;
+    private static final int SOUND_CALL = 1;
+    private static final int SOUND_MESSENGER = 2;
+
+    private int audioMode = SOUND_MIC;
 
     // Согласие на запись экрана получено (токен MediaProjection на руках).
     // С этого момента FGS обязан иметь тип mediaProjection,
@@ -269,15 +274,14 @@ public class RecorderService extends Service {
                 .format(new Date()) + ".mp4";
 
         // Цепочка попыток:
-        // 0 — то, что выбрал пользователь (режим звонка или микрофон, нативное разрешение)
-        // 1 — если режим звонка не пошёл, то же самое, но с микрофоном
+        // 0 — выбранный источник звука (микрофон / звонок / мессенджер), нативное разрешение
+        // 1 — если особый источник не пошёл, то же самое, но с микрофоном
         // 2 — упрощённые параметры (720p, ниже битрейт) — почти всегда проходит
+        int mainSource = selectedAudioSource();
         ArrayList<RecorderConfig> attempts = new ArrayList<RecorderConfig>();
-        attempts.add(new RecorderConfig(callMode
-                ? MediaRecorder.AudioSource.VOICE_CALL
-                : MediaRecorder.AudioSource.MIC,
+        attempts.add(new RecorderConfig(mainSource,
                 width, height, 8_000_000, 192_000, true));
-        if (callMode) {
+        if (mainSource != MediaRecorder.AudioSource.MIC) {
             attempts.add(new RecorderConfig(MediaRecorder.AudioSource.MIC,
                     width, height, 8_000_000, 192_000, true));
         }
@@ -333,13 +337,21 @@ public class RecorderService extends Service {
 
             int usedIndex = attempts.indexOf(used);
             String message;
-            if (callMode && usedIndex == 1) {
-                message = "Устройство не даёт звук звонка — записываю с микрофона";
-            } else if (usedIndex != 0) {
-                message = "Запись началась в " + used.width + "x" + used.height
-                        + " (резервные параметры)";
+            if (usedIndex != 0) {
+                if (audioMode == SOUND_MESSENGER) {
+                    message = "Не разрешили захватить звук мессенджеров — записываю с микрофона";
+                } else if (audioMode == SOUND_CALL) {
+                    message = "Устройство не даёт звук звонка — записываю с микрофона";
+                } else {
+                    message = "Запись началась в " + used.width + "x" + used.height
+                            + " (резервные параметры)";
+                }
+            } else if (audioMode == SOUND_MESSENGER) {
+                message = "Запись: звук приложений (твой голос НЕ записывается)";
+            } else if (audioMode == SOUND_CALL) {
+                message = "Запись началась (режим звонка)";
             } else {
-                message = callMode ? "Запись началась (режим звонка)" : "Запись началась";
+                message = "Запись началась";
             }
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
@@ -353,6 +365,53 @@ public class RecorderService extends Service {
                     "Не удалось начать запись:\n" + e.getClass().getSimpleName()
                             + ": " + String.valueOf(e.getMessage()),
                     Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private int selectedAudioSource() {
+        switch (audioMode) {
+            case SOUND_CALL:
+                return MediaRecorder.AudioSource.VOICE_CALL;
+            case SOUND_MESSENGER:
+                return MediaRecorder.AudioSource.PLAYBACK_CAPTURE;
+            default:
+                return MediaRecorder.AudioSource.MIC;
+        }
+    }
+
+    private String soundModeLabel() {
+        switch (audioMode) {
+            case SOUND_CALL:
+                return "Звук: звонок";
+            case SOUND_MESSENGER:
+                return "Звук: мессенджер";
+            default:
+                return "Звук: микрофон";
+        }
+    }
+
+    private int modeColor() {
+        switch (audioMode) {
+            case SOUND_CALL:
+                return 0xFF7CB342;
+            case SOUND_MESSENGER:
+                return 0xFF26A69A;
+            default:
+                return 0xFF455A64;
+        }
+    }
+
+    private String soundModeHint() {
+        switch (audioMode) {
+            case SOUND_CALL:
+                return "Звук обычного телефонного звонка. "
+                        + "К звонкам в мессенджерах не относится";
+            case SOUND_MESSENGER:
+                return "Аудио приложений устройства (Telegram, WhatsApp…). "
+                        + "Твой голос в эту запись не попадёт";
+            default:
+                return "Микрофон. Для звонка в мессенджере держи планшет "
+                        + "на динамике — запишутся обе стороны";
         }
     }
 
@@ -372,6 +431,17 @@ public class RecorderService extends Service {
             r.setAudioEncodingBitRate(cfg.audioBitRate);
             if (cfg.audioRate48k) {
                 r.setAudioSamplingRate(48_000);
+            }
+            // Режим мессенджеров: захватываем аудиовыход приложений устройства
+            // (Telegram, WhatsApp, …) через AudioPlaybackCapture, Android 11+
+            if (cfg.audioSource == MediaRecorder.AudioSource.PLAYBACK_CAPTURE
+                    && Build.VERSION.SDK_INT >= 31) {
+                AudioPlaybackCaptureConfiguration pc =
+                        new AudioPlaybackCaptureConfiguration.Builder(projection)
+                                .setClientPackageName(getPackageName())
+                                .applyDefaults()
+                                .build();
+                r.setAudioPlaybackCaptureConfig(pc);
             }
 
             if (Build.VERSION.SDK_INT >= 29) {
@@ -591,7 +661,9 @@ public class RecorderService extends Service {
         String text;
         if (state == State.RECORDING) {
             title = "Идёт запись";
-            text = formatTime(elapsedMs()) + (callMode ? " · режим звонка" : "");
+            String suffix = audioMode == SOUND_MESSENGER ? " · мессенджер"
+                    : audioMode == SOUND_CALL ? " · звонок" : "";
+            text = formatTime(elapsedMs()) + suffix;
         } else if (state == State.PAUSED) {
             title = "Запись на паузе";
             text = formatTime(elapsedMs());
@@ -669,12 +741,12 @@ public class RecorderService extends Service {
         panel.setVisibility(View.GONE);
 
         btnStart = makeButton("Записать", 0xFFE53935);
-        btnCallMode = makeButton("Режим звонка: выкл", 0xFF455A64);
+        btnAudioMode = makeButton("Звук: микрофон", 0xFF455A64);
         btnPause = makeButton("Пауза", 0xFFFB8C00);
         btnStop = makeButton("Стоп", 0xFFD32F2F);
 
         panel.addView(btnStart);
-        panel.addView(btnCallMode);
+        panel.addView(btnAudioMode);
         panel.addView(btnPause);
         panel.addView(btnStop);
 
@@ -758,19 +830,23 @@ public class RecorderService extends Service {
             }
         });
 
-        btnCallMode.setOnClickListener(new View.OnClickListener() {
+        btnAudioMode.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (state != State.IDLE) {
-                    return; // режим меняется только до начала записи
+                    return; // звук меняется только до начала записи
                 }
-                callMode = !callMode;
-                btnCallMode.setText("Режим звонка: " + (callMode ? "вкл" : "выкл"));
-                btnCallMode.setBackgroundColor(callMode ? 0xFF7CB342 : 0xFF455A64);
-                Toast.makeText(RecorderService.this, callMode
-                                ? "Режим звонка: записывается звук со всего телефона"
-                                : "Записывается микрофон",
-                        Toast.LENGTH_SHORT).show();
+                audioMode = (audioMode + 1) % 3;
+                if (audioMode == SOUND_MESSENGER && Build.VERSION.SDK_INT < 31) {
+                    Toast.makeText(RecorderService.this,
+                            "Режим мессенджеров нужен Android 11+, у тебя старше",
+                            Toast.LENGTH_SHORT).show();
+                    audioMode = (audioMode + 1) % 3;
+                }
+                btnAudioMode.setText(soundModeLabel());
+                btnAudioMode.setBackgroundColor(modeColor());
+                Toast.makeText(RecorderService.this, soundModeHint(),
+                        Toast.LENGTH_LONG).show();
             }
         });
 
@@ -845,14 +921,16 @@ public class RecorderService extends Service {
             dotBackground.setColor(0xFFE53935);
             dot.setText("REC");
             btnStart.setVisibility(View.VISIBLE);
-            btnCallMode.setVisibility(View.VISIBLE);
+            btnAudioMode.setVisibility(View.VISIBLE);
+            btnAudioMode.setText(soundModeLabel());
+            btnAudioMode.setBackgroundColor(modeColor());
             btnPause.setVisibility(View.GONE);
             btnStop.setVisibility(View.GONE);
         } else {
             dotBackground.setColor(state == State.PAUSED ? 0xFF9E9E9E : 0xFFE53935);
             dot.setText(formatTime(elapsedMs()));
             btnStart.setVisibility(View.GONE);
-            btnCallMode.setVisibility(View.GONE);
+            btnAudioMode.setVisibility(View.GONE);
             btnPause.setVisibility(View.VISIBLE);
             btnStop.setVisibility(View.VISIBLE);
             btnPause.setText(state == State.PAUSED ? "Продолжить" : "Пауза");
