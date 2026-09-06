@@ -1,4 +1,4 @@
-name: Build DS Game (Android APK)
+name: Build X3 Recorder (Android APK)
 
 on:
   push:
@@ -13,7 +13,7 @@ defaults:
 
 jobs:
   build-android:
-    name: Build Android APK (Android 10-14 arm64+arm32)
+    name: Build Android APK (Java, Android 7-14)
     runs-on: ubuntu-latest
 
     steps:
@@ -21,17 +21,13 @@ jobs:
 
       - name: Check package name consistency
         run: |
-          grep -q 'package="com.cb4"' game/AndroidManifest.xml
-          # RuStore отклоняет APK без версии (verCode=null при анализе пакета)
-          grep -q 'android:versionCode="[0-9]\+"' game/AndroidManifest.xml
-          grep -q 'android:versionName="[^"]\+"' game/AndroidManifest.xml
-          grep -q 'android:name="com.cb4.GameActivity"' game/AndroidManifest.xml
-          grep -q '^package com.cb4;' game/java/com/dimscript/gamedemo/GameActivity.java
-          grep -q 'Java_com_cb4_GameActivity_nativeReplaceText' runtime.c
-          grep -q 'Java_com_cb4_GameActivity_nativeSubmitText' runtime.c
-          grep -q 'Java_com_cb4_GameActivity_nativeKeyboardHidden' runtime.c
-          ! grep -rn 'dimscript\.gamedemo\|Java_com_dimscript\|com\.CB4\|Java_com_CB4' \
-            game/AndroidManifest.xml game/java runtime.c
+          grep -q 'package="com.x3.screenrec"' recorder/AndroidManifest.xml
+          grep -q 'android:versionCode="[0-9]\+"' recorder/AndroidManifest.xml
+          grep -q 'android:versionName="[^"]\+"' recorder/AndroidManifest.xml
+          grep -q 'android:name="com.x3.screenrec.MainActivity"' recorder/AndroidManifest.xml
+          grep -q '^package com.x3.screenrec;' recorder/java/com/x3/screenrec/MainActivity.java
+          test -f recorder/res/layout/activity_main.xml
+          test -f recorder/res/values/strings.xml
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -46,29 +42,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "$CB4_P12_BASE64" || -z "$CB4_P12_PASSWORD" ]]; then
+          if [[ -z "${CB4_P12_BASE64}" || -z "${CB4_P12_PASSWORD}" ]]; then
             echo "::error::Add CB4_P12_BASE64 and CB4_P12_PASSWORD repository secrets."
             exit 1
           fi
 
           umask 077
-          KEY_DIR="$RUNNER_TEMP/cb4-signing"
+          KEY_DIR="$RUNNER_TEMP/x3-signing"
           mkdir -p "$KEY_DIR"
           chmod 700 "$KEY_DIR"
 
-          if ! printf '%s' "$CB4_P12_BASE64" \
-            | tr -d '[:space:]' \
-            | base64 --decode > "$KEY_DIR/CB4.p12"; then
+          if ! printf '%s' "${CB4_P12_BASE64}" \
+              | tr -d '[:space:]' \
+              | base64 --decode > "$KEY_DIR/X3.p12"; then
             echo "::error::CB4_P12_BASE64 is not valid Base64."
             exit 1
           fi
 
-          chmod 600 "$KEY_DIR/CB4.p12"
+          chmod 600 "$KEY_DIR/X3.p12"
 
           if ! keytool -list -storetype PKCS12 \
-            -keystore "$KEY_DIR/CB4.p12" \
-            -storepass:env CB4_P12_PASSWORD > /dev/null; then
-            echo "::error::Cannot open the P12. Check the key and its password."
+              -keystore "$KEY_DIR/X3.p12" \
+              -storepass:env CB4_P12_PASSWORD > /dev/null; then
+            echo "::error::Cannot open the P12. Check the password."
             exit 1
           fi
 
@@ -77,59 +73,50 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        id: ndk
-        with:
-          ndk-version: r25c
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Generate game.c
-        run: python3 gen.py
-
-      - name: Stage assets
-        run: python3 stage_assets.py game/assets staging/assets
-
-      - name: Build native libraries
-        env:
-          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+      - name: Generate R.java and package resources
         run: |
-          TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          GLUE="$NDK_ROOT/sources/android/native_app_glue"
-
-          mkdir -p staging/lib/arm64-v8a staging/lib/armeabi-v7a
-
-          "$TOOLCHAIN/aarch64-linux-android29-clang" -O3 -s -fPIC -shared \
-            game/game.c runtime.c main.c "$GLUE/android_native_app_glue.c" \
-            -I. -I"$GLUE" -landroid -llog -lm \
-            -o staging/lib/arm64-v8a/libds_game.so
-
-          "$TOOLCHAIN/armv7a-linux-androideabi29-clang" -O3 -s -fPIC -shared \
-            game/game.c runtime.c main.c "$GLUE/android_native_app_glue.c" \
-            -I. -I"$GLUE" -landroid -llog -lm \
-            -o staging/lib/armeabi-v7a/libds_game.so
-
-      - name: Package and align APK
-        run: |
+          set -euo pipefail
           BT="$ANDROID_HOME/build-tools/34.0.0"
+          SDK_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
 
-          VERSION_CODE="$(sed -n 's/.*android:versionCode="\([0-9]\+\)".*/\1/p' game/AndroidManifest.xml | head -n1)"
-          VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]\+\)".*/\1/p' game/AndroidManifest.xml | head -n1)"
-          echo "versionCode=$VERSION_CODE versionName=$VERSION_NAME"
+          mkdir -p build/gen build/classes out
+          "$BT/aapt" package \
+            -J build/gen \
+            -M recorder/AndroidManifest.xml \
+            -S recorder/res \
+            -I "$SDK_JAR" \
+            --version-code "$(sed -n 's/.*android:versionCode="\([0-9]\+\).*/\1/p' recorder/AndroidManifest.xml)" \
+            --version-name "$(sed -n 's/.*android:versionName="\([^"]\+\)".*/\1/p' recorder/AndroidManifest.xml)" \
+            -F out/unsigned.apk
 
-          "$BT/aapt" package -f \
-            -M game/AndroidManifest.xml \
-            -S game/res \
-            -I "$ANDROID_HOME/platforms/android-34/android.jar" \
-            --version-code "$VERSION_CODE" \
-            --version-name "$VERSION_NAME" \
-            -F unsigned.apk ./staging/
+      - name: Compile Java
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          SDK_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
 
-          "$BT/zipalign" -v 4 unsigned.apk aligned.apk
+          "$JAVA_HOME/bin/javac" \
+            -source 11 -target 11 \
+            -bootclasspath "$SDK_JAR" \
+            -classpath "$SDK_JAR" \
+            -encoding UTF-8 \
+            -d build/classes \
+            build/gen/com/x3/screenrec/R.java \
+            $(find recorder/java -name '*.java')
+
+      - name: DEX and add to APK
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          SDK_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
+
+          mkdir -p build/dex
+          "$BT/d8" --release --lib "$SDK_JAR" --min-api 24 \
+            --output build/dex $(find build/classes -name '*.class')
+          (cd build/dex && zip -X ../../out/unsigned.apk classes.dex)
+
+      - name: Align
+        run: "$ANDROID_HOME/build-tools/34.0.0/zipalign" -v 4 out/unsigned.apk out/aligned.apk
 
       - name: Sign APK
         env:
@@ -137,36 +124,36 @@ jobs:
           CB4_KEY_ALIAS: ${{ secrets.CB4_KEY_ALIAS }}
           CB4_KEY_PASSWORD: ${{ secrets.CB4_KEY_PASSWORD || secrets.CB4_P12_PASSWORD }}
         run: |
+          set -euo pipefail
           BT="$ANDROID_HOME/build-tools/34.0.0"
 
           SIGN_ARGS=(
-            --ks "$RUNNER_TEMP/cb4-signing/CB4.p12"
+            --ks "$RUNNER_TEMP/x3-signing/X3.p12"
             --ks-type PKCS12
             --ks-pass env:CB4_P12_PASSWORD
             --key-pass env:CB4_KEY_PASSWORD
           )
 
-          if [[ -n "$CB4_KEY_ALIAS" ]]; then
-            SIGN_ARGS+=(--ks-key-alias "$CB4_KEY_ALIAS")
+          if [[ -n "${CB4_KEY_ALIAS}" ]]; then
+            SIGN_ARGS+=("--ks-key-alias" "$CB4_KEY_ALIAS")
           fi
 
-          "$BT/apksigner" sign "${SIGN_ARGS[@]}" \
-            --out Game.apk aligned.apk
+          "$BT/apksigner" sign "${SIGN_ARGS[@]}" --out X3Recorder.apk out/aligned.apk
 
-      - name: Verify APK metadata and signature
+      - name: Verify
         run: |
           BT="$ANDROID_HOME/build-tools/34.0.0"
-          "$BT/aapt" dump badging Game.apk | head -n 5
-          "$BT/aapt" dump badging Game.apk | grep -q "versionCode='[0-9]\+'" \
-            || { echo "::error::APK has no versionCode - RuStore will reject it."; exit 1; }
-          "$BT/apksigner" verify --verbose --print-certs Game.apk
+          "$BT/aapt" dump badging X3Recorder.apk | head -n 8
+          "$BT/apksigner" verify --verbose --print-certs X3Recorder.apk
+          "$BT/aapt" dump badging X3Recorder.apk | grep -q "launchable-activity" \
+            || { echo "::error::No launchable activity found."; exit 1; }
 
       - name: Delete temporary signing key
         if: ${{ always() }}
-        run: rm -rf -- "${RUNNER_TEMP:?}/cb4-signing"
+        run: rm -rf -- "${RUNNER_TEMP:?}/x3-signing"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Game-APK-Android10-14-arm64-arm32
-          path: Game.apk
+          name: X3Recorder-APK
+          path: X3Recorder.apk
           if-no-files-found: error
