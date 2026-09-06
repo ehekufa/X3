@@ -35,37 +35,49 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Restore signing key from Secrets
+      - name: Prepare signing key
+        id: signing
         env:
           CB4_P12_BASE64: ${{ secrets.CB4_P12_BASE64 }}
           CB4_P12_PASSWORD: ${{ secrets.CB4_P12_PASSWORD }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${CB4_P12_BASE64}" || -z "${CB4_P12_PASSWORD}" ]]; then
-            echo "::error::Add CB4_P12_BASE64 and CB4_P12_PASSWORD repository secrets."
-            exit 1
-          fi
-
-          umask 077
           KEY_DIR="$RUNNER_TEMP/x3-signing"
           mkdir -p "$KEY_DIR"
           chmod 700 "$KEY_DIR"
 
-          if ! printf '%s' "${CB4_P12_BASE64}" \
-              | tr -d '[:space:]' \
-              | base64 --decode > "$KEY_DIR/X3.p12"; then
-            echo "::error::CB4_P12_BASE64 is not valid Base64."
-            exit 1
-          fi
+          if [[ -n "${CB4_P12_BASE64}" && -n "${CB4_P12_PASSWORD}" ]]; then
+            # Реальный ключ из секретов
+            if ! printf '%s' "${CB4_P12_BASE64}" \
+                | tr -d '[:space:]' \
+                | base64 --decode > "$KEY_DIR/X3.p12"; then
+              echo "::error::CB4_P12_BASE64 is not valid Base64."
+              exit 1
+            fi
 
-          chmod 600 "$KEY_DIR/X3.p12"
+            chmod 600 "$KEY_DIR/X3.p12"
 
-          if ! keytool -list -storetype PKCS12 \
-              -keystore "$KEY_DIR/X3.p12" \
-              -storepass:env CB4_P12_PASSWORD > /dev/null; then
-            echo "::error::Cannot open the P12. Check the password."
-            exit 1
+            if ! keytool -list -storetype PKCS12 \
+                -keystore "$KEY_DIR/X3.p12" \
+                -storepass:env CB4_P12_PASSWORD > /dev/null; then
+              echo "::error::Cannot open the P12. Check the password."
+              exit 1
+            fi
+            echo "mode=secret" >> "$GITHUB_OUTPUT"
+          else
+            # Секретов нет: генерируем временный debug-ключ,
+            # чтобы APK всё равно был установочным.
+            # Внимание: каждый билд будет подписан НОВЫМ ключом —
+            # обновление поверх потребует удалить старую версию.
+            STOREPASS="x3debugkey"
+            keytool -genkeypair \
+              -v -keystore "$KEY_DIR/X3.p12" -storetype PKCS12 \
+              -alias x3debug -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$STOREPASS" -keypass "$STOREPASS" \
+              -dname "CN=X3 Debug, OU=X3, O=X3, C=DE" > /dev/null
+            echo "$STOREPASS" > "$KEY_DIR/storepass"
+            echo "mode=generated" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: android-actions/setup-android@v3
@@ -121,25 +133,37 @@ jobs:
 
       - name: Sign APK
         env:
+          SIGNING_MODE: ${{ steps.signing.outputs.mode }}
           CB4_P12_PASSWORD: ${{ secrets.CB4_P12_PASSWORD }}
           CB4_KEY_ALIAS: ${{ secrets.CB4_KEY_ALIAS }}
           CB4_KEY_PASSWORD: ${{ secrets.CB4_KEY_PASSWORD || secrets.CB4_P12_PASSWORD }}
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/34.0.0"
+          KEY_DIR="$RUNNER_TEMP/x3-signing"
 
-          SIGN_ARGS=(
-            --ks "$RUNNER_TEMP/x3-signing/X3.p12"
-            --ks-type PKCS12
-            --ks-pass env:CB4_P12_PASSWORD
-            --key-pass env:CB4_KEY_PASSWORD
-          )
+          if [[ "${SIGNING_MODE}" == "generated" ]]; then
+            STOREPASS="$(cat "$KEY_DIR/storepass")"
+            "$BT/apksigner" sign \
+              --ks "$KEY_DIR/X3.p12" --ks-type PKCS12 \
+              --ks-pass "pass:$STOREPASS" --key-pass "pass:$STOREPASS" \
+              --ks-key-alias x3debug \
+              --out X3Recorder.apk out/aligned.apk
+            echo "Signed with a temporary debug key (no repository secrets)."
+          else
+            SIGN_ARGS=(
+              --ks "$KEY_DIR/X3.p12"
+              --ks-type PKCS12
+              --ks-pass env:CB4_P12_PASSWORD
+              --key-pass env:CB4_KEY_PASSWORD
+            )
 
-          if [[ -n "${CB4_KEY_ALIAS}" ]]; then
-            SIGN_ARGS+=("--ks-key-alias" "$CB4_KEY_ALIAS")
+            if [[ -n "${CB4_KEY_ALIAS}" ]]; then
+              SIGN_ARGS+=("--ks-key-alias" "$CB4_KEY_ALIAS")
+            fi
+
+            "$BT/apksigner" sign "${SIGN_ARGS[@]}" --out X3Recorder.apk out/aligned.apk
           fi
-
-          "$BT/apksigner" sign "${SIGN_ARGS[@]}" --out X3Recorder.apk out/aligned.apk
 
       - name: Verify
         run: |
@@ -148,6 +172,19 @@ jobs:
           "$BT/apksigner" verify --verbose --print-certs X3Recorder.apk
           "$BT/aapt" dump badging X3Recorder.apk | grep -q "launchable-activity" \
             || { echo "::error::No launchable activity found."; exit 1; }
+
+      # Если ключ сгенерирован (секретов нет) — отдаём его в артефакте,
+      # чтобы ОДИН раз сохранить как секреты CB4_P12_BASE64/CB4_P12_PASSWORD
+      # и получать стабильную подпись.
+      - name: Upload debug keystore (one-time)
+        if: ${{ steps.signing.outputs.mode == 'generated' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: X3-debug-keystore
+          path: |
+            ${{ runner.temp }}/x3-signing/X3.p12
+            ${{ runner.temp }}/x3-signing/storepass
+          if-no-files-found: error
 
       - name: Delete temporary signing key
         if: ${{ always() }}
