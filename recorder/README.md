@@ -32,6 +32,7 @@ MP4 (H.264 + AAC), до 1920px по длинной стороне, 30 fps, 8 М�
 
 ```
 AndroidManifest.xml          манифест (com.x3.screenrec, minSdk 24, targetSdk 34)
+build.gradle                 Gradle-модуль :app (Android Studio)
 build.sh                     локальная сборка aapt + javac + d8 (нужен $ANDROID_HOME)
 res/                         layout, строки, иконки
 java/com/x3/screenrec/
@@ -42,7 +43,9 @@ java/com/x3/screenrec/
 
 ## Сборка
 
-- **CI**: `.github/workflows/build-recorder.yml` → артефакт `X3Recorder-APK`
+- **Android Studio / Gradle**: открыть корень репо (модуль `:app` = эта папка),
+  собрать `Build → Build App Bundle(s)/APK(s)`. Wrapper (Gradle 8.7) уже в репо.
+- **CI**: workflow `build-recorder.yml` (в `.github/workflows/`) → артефакт `X3Recorder-APK`
   (подпись тем же P12 из секретов `CB4_P12_BASE64`/`CB4_P12_PASSWORD`, что и игра).
-- **Локально**: `./build.sh` (нужны `platforms;android-34`, `build-tools;34.0.0`, JDK 11+),
+- **Без Gradle**: `./build.sh` (нужны `platforms;android-34`, `build-tools;34.0.0`, JDK 11+),
   затем подписать `apksigner`.
